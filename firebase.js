@@ -200,3 +200,187 @@ export async function sendPasswordReset(email) {
     url: window.location.origin,
   });
 }
+
+// ── PROGRESO — Racha de lectura bíblica ────────────────────────────────
+// Documento: progress/{uid} → { lastDay, streak, best, total, updatedAt }
+export function dayKey(d = new Date()) {
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+function yesterdayKey() {
+  const y = new Date();
+  y.setDate(y.getDate() - 1);
+  return dayKey(y);
+}
+
+export async function getReadingStreak(uid) {
+  const snap = await getDoc(doc(db, "progress", uid));
+  const d = snap.exists() ? snap.data() : {};
+  const alive = d.lastDay === dayKey() || d.lastDay === yesterdayKey();
+  return {
+    streak: alive ? (d.streak || 0) : 0,
+    best: d.best || 0,
+    total: d.total || 0,
+    readToday: d.lastDay === dayKey(),
+  };
+}
+
+export async function recordReadingDay(uid) {
+  const ref = doc(db, "progress", uid);
+  const snap = await getDoc(ref);
+  const d = snap.exists() ? snap.data() : {};
+  const today = dayKey();
+  if (d.lastDay === today) {
+    return { streak: d.streak || 1, best: d.best || 1, total: d.total || 1, readToday: true, isNew: false };
+  }
+  const streak = d.lastDay === yesterdayKey() ? (d.streak || 0) + 1 : 1;
+  const best = Math.max(d.best || 0, streak);
+  const total = (d.total || 0) + 1;
+  await setDoc(ref, { lastDay: today, streak, best, total, updatedAt: Date.now() }, { merge: true });
+  return { streak, best, total, readToday: true, isNew: true };
+}
+
+// ── ASISTENCIA — Código del día ────────────────────────────────────────
+// attendanceCodes/{fecha} → { code, label, by, date, createdAt }
+// attendance/{fecha_uid}  → { uid, name, date, service, at }
+// progress/{uid}          → attLastWeek, attStreak, attBest, attTotal (racha semanal)
+function weekKey(d = new Date()) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); // lunes de esa semana
+  return dayKey(x);
+}
+function prevWeekKey() {
+  const x = new Date();
+  x.setDate(x.getDate() - 7);
+  return weekKey(x);
+}
+
+export function serviceLabelFor(d = new Date()) {
+  const n = d.getDay();
+  return n === 0 ? "Servicio dominical"
+    : n === 2 ? "Servicio de martes"
+    : n === 4 ? "Servicio de jueves"
+    : n === 6 ? "Servicio de sábado"
+    : "Servicio especial";
+}
+
+export async function getTodayCode() {
+  const s = await getDoc(doc(db, "attendanceCodes", dayKey()));
+  return s.exists() ? s.data() : null;
+}
+
+export async function generateTodayCode(by) {
+  const code = String(Math.floor(1000 + Math.random() * 9000));
+  const data = { code, label: serviceLabelFor(), by: by || "", date: dayKey(), createdAt: Date.now() };
+  await setDoc(doc(db, "attendanceCodes", dayKey()), data);
+  return data;
+}
+
+export async function getAttendanceInfo(uid) {
+  const s = await getDoc(doc(db, "progress", uid));
+  const d = s.exists() ? s.data() : {};
+  const alive = d.attLastWeek === weekKey() || d.attLastWeek === prevWeekKey();
+  return {
+    weekStreak: alive ? (d.attStreak || 0) : 0,
+    weekBest: d.attBest || 0,
+    total: d.attTotal || 0,
+    thisWeek: d.attLastWeek === weekKey(),
+  };
+}
+
+export async function getMyAttendance(uid) {
+  const snap = await getDocs(query(collection(db, "attendance"), where("uid", "==", uid)));
+  return snap.docs.map(x => x.data()).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 8);
+}
+
+export async function checkIn(uid, name, code) {
+  const codeDoc = await getTodayCode();
+  if (!codeDoc) return { ok: false, reason: "nocode" };
+  if (String(code).trim() !== String(codeDoc.code)) return { ok: false, reason: "wrong" };
+  const ref = doc(db, "attendance", `${dayKey()}_${uid}`);
+  const ex = await getDoc(ref);
+  if (ex.exists()) return { ok: true, already: true, service: codeDoc.label, info: await getAttendanceInfo(uid) };
+  await setDoc(ref, { uid, name: name || "", date: dayKey(), service: codeDoc.label, at: Date.now() });
+  const pref = doc(db, "progress", uid);
+  const ps = await getDoc(pref);
+  const p = ps.exists() ? ps.data() : {};
+  const wk = weekKey();
+  const streak = p.attLastWeek === wk ? (p.attStreak || 1)
+    : p.attLastWeek === prevWeekKey() ? (p.attStreak || 0) + 1 : 1;
+  const best = Math.max(p.attBest || 0, streak);
+  const total = (p.attTotal || 0) + 1;
+  await setDoc(pref, { attLastWeek: wk, attStreak: streak, attBest: best, attTotal: total, updatedAt: Date.now() }, { merge: true });
+  return { ok: true, already: false, service: codeDoc.label, info: { weekStreak: streak, weekBest: best, total, thisWeek: true } };
+}
+
+export function listenTodayAttendance(callback) {
+  return onSnapshot(query(collection(db, "attendance"), where("date", "==", dayKey())), (snap) => {
+    callback(snap.docs.map(x => x.data()).sort((a, b) => (a.at || 0) - (b.at || 0)));
+  });
+}
+
+export async function getRecentServices() {
+  const from = new Date();
+  from.setDate(from.getDate() - 30);
+  const snap = await getDocs(query(collection(db, "attendance"), where("date", ">=", dayKey(from))));
+  const map = {};
+  snap.docs.forEach(x => {
+    const v = x.data();
+    if (!map[v.date]) map[v.date] = { date: v.date, label: v.service || "Servicio", count: 0 };
+    map[v.date].count++;
+  });
+  return Object.values(map).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
+}
+
+// ── ESTUDIO BÍBLICO ────────────────────────────────────────────────────
+// studies/{id}                 → estudios creados por pastores
+// studyProgress/{estudio_uid}  → { studyId, uid, name, done:[días], total, updatedAt }
+export function listenStudies(callback) {
+  return onSnapshot(collection(db, "studies"), (snap) => {
+    callback(
+      snap.docs
+        .map(x => ({ id: x.id, ...x.data() }))
+        .filter(s => !s.archived)
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    );
+  });
+}
+
+export async function saveStudy(study) {
+  const { id, ...rest } = study;
+  if (id) {
+    await setDoc(doc(db, "studies", id), { ...rest, updatedAt: Date.now() }, { merge: true });
+    return id;
+  }
+  const ref = await addDoc(collection(db, "studies"), { ...rest, createdAt: Date.now() });
+  return ref.id;
+}
+
+export async function archiveStudy(id) {
+  await setDoc(doc(db, "studies", id), { archived: true, updatedAt: Date.now() }, { merge: true });
+}
+
+export async function getMyStudyProgress(uid) {
+  const snap = await getDocs(query(collection(db, "studyProgress"), where("uid", "==", uid)));
+  const map = {};
+  snap.docs.forEach(x => { const v = x.data(); map[v.studyId] = v.done || []; });
+  return map;
+}
+
+export async function markStudyDay(studyId, uid, name, dayIdx, total) {
+  const ref = doc(db, "studyProgress", `${studyId}_${uid}`);
+  const s = await getDoc(ref);
+  const done = s.exists() ? (s.data().done || []) : [];
+  if (!done.includes(dayIdx)) done.push(dayIdx);
+  await setDoc(ref, { studyId, uid, name: name || "", done, total, updatedAt: Date.now() }, { merge: true });
+  return done;
+}
+
+export async function getStudyProgressAll(studyId) {
+  const snap = await getDocs(query(collection(db, "studyProgress"), where("studyId", "==", studyId)));
+  return snap.docs
+    .map(x => x.data())
+    .sort((a, b) => (b.done?.length || 0) - (a.done?.length || 0));
+}
