@@ -21,6 +21,8 @@ import {
   addDoc,
   onSnapshot,
 } from "firebase/firestore";
+import { getMessaging, getToken, deleteToken, isSupported } from "firebase/messaging";
+import { VAPID_KEY } from "./pushConfig.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCrRw94YzDGmcJ-c444mVxIsZ3UU9lrfcc",
@@ -383,4 +385,39 @@ export async function getStudyProgressAll(studyId) {
   return snap.docs
     .map(x => x.data())
     .sort((a, b) => (b.done?.length || 0) - (a.done?.length || 0));
+}
+
+// ── RECORDATORIOS PUSH ─────────────────────────────────────────────────
+// pushTokens/{token} → { uid, name, active, ua, updatedAt }
+export async function pushSupported() {
+  try {
+    return ("Notification" in window) && ("serviceWorker" in navigator) && ("PushManager" in window) && (await isSupported());
+  } catch { return false; }
+}
+
+export function pushEnabledLocal() {
+  try { return !!localStorage.getItem("push_token") && Notification.permission === "granted"; } catch { return false; }
+}
+
+export async function enablePush(user) {
+  if (!VAPID_KEY || VAPID_KEY.startsWith("PEGA")) throw new Error("no-vapid");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error("denied");
+  const reg = await navigator.serviceWorker.ready;
+  const token = await getToken(getMessaging(app), { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
+  if (!token) throw new Error("no-token");
+  await setDoc(doc(db, "pushTokens", token), {
+    uid: user.id, name: user.name || "", active: true, ua: navigator.userAgent.slice(0, 120), updatedAt: Date.now(),
+  }, { merge: true });
+  try { localStorage.setItem("push_token", token); } catch {}
+  try { await reg.showNotification("Recordatorios activados 🙏", { body: "Te avisaremos para leer la Biblia y mantener tu racha.", icon: "/icon-192.png" }); } catch {}
+  return token;
+}
+
+export async function disablePush() {
+  let token = null;
+  try { token = localStorage.getItem("push_token"); } catch {}
+  if (token) { try { await setDoc(doc(db, "pushTokens", token), { active: false, updatedAt: Date.now() }, { merge: true }); } catch {} }
+  try { await deleteToken(getMessaging(app)); } catch {}
+  try { localStorage.removeItem("push_token"); } catch {}
 }

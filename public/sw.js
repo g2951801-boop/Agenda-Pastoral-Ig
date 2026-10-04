@@ -2,7 +2,7 @@
 // - La Biblia (rv1909.json) se guarda una vez y funciona sin conexión.
 // - La app abre aunque no haya internet (la última versión visitada).
 // - Nunca toca Firebase, EmailJS ni /api (solo archivos de este mismo sitio).
-const CACHE = "mca-v1";
+const CACHE = "mca-v2";
 const BIBLE = "/rv1909.json";
 
 self.addEventListener("install", (e) => {
@@ -54,6 +54,32 @@ self.addEventListener("fetch", (e) => {
         .then((r) => { if (r.ok) { const copy = r.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); } return r; })
         .catch(() => hit);
       return hit || net;
+    })
+  );
+});
+
+// ── Notificaciones push (recordatorios) ────────────────────────────────
+self.addEventListener("push", (e) => {
+  let p = {};
+  try { p = e.data ? e.data.json() : {}; } catch { p = { data: { body: e.data && e.data.text() } }; }
+  const d = p.data || p.notification || p;
+  e.waitUntil(
+    self.registration.showNotification(d.title || "Mi Casa de Avivamiento", {
+      body: d.body || "",
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      data: { url: d.url || "/" },
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "/";
+  e.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const c of list) { if ("focus" in c) return c.focus(); }
+      return self.clients.openWindow(url);
     })
   );
 });
