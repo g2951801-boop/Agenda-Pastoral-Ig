@@ -1,0 +1,44 @@
+name: Activar personal inicial
+
+on:
+  workflow_dispatch:
+
+jobs:
+  activar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: scripts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+
+      - name: Pastor Jean Carlos
+        run: node activar-personal.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PERSONAL_UID: 2e5ZpS1ZJigKY5iRn4E2bLN2wO53
+          PERSONAL_ROLE: pastor
+          PERSONAL_PASTOR: jcg
+
+      - name: Pastora Katherine
+        if: always()
+        run: node activar-personal.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PERSONAL_UID: O8c8OkCkn7cwyvrhARV5xF7dMTi1
+          PERSONAL_ROLE: pastor
+          PERSONAL_PASTOR: kg
+
+      - name: Secretaría
+        if: always()
+        run: node activar-personal.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PERSONAL_UID: le69eZDQUjdbRvvEFMa5iId06Of2
+          PERSONAL_ROLE: secretaria
+          PERSONAL_PASTOR: ninguno
